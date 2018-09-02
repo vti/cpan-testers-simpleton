@@ -1,0 +1,80 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+
+use Getopt::Long;
+use HTTP::Tiny;
+
+my $opt_last  = 'wait-for-recent.txt';
+my $opt_rss   = '/tmp/recent.rss';
+my $opt_sleep = 60;
+my $opt_verbose;
+GetOptions(
+    'last=s'  => \$opt_last,
+    'sleep=i' => \$opt_sleep,
+    'verbose' => \$opt_verbose
+) or die("Error in command line arguments\n");
+
+while (1) {
+    print STDERR "Mirroring...\n" if $opt_verbose;
+
+    my $result =
+      HTTP::Tiny->new->mirror( 'https://metacpan.org/feed/recent?size=100',
+        $opt_rss );
+    die 'request failed' unless $result->{success};
+
+    my $rss = _slurp($opt_rss);
+
+    my @releases =
+      $rss =~ m{<rdf:li rdf:resource="https://metacpan\.org/release/(.*?)" />}g;
+
+    my $release;
+    my $last = -f $opt_last ? _slurp($opt_last) : undef;
+
+    if ( !$last ) {
+        print STDERR "No last release found, taking the first one\n"
+          if $opt_verbose;
+
+        $release = shift @releases;
+    }
+    else {
+        print STDERR "Last release was $last\n" if $opt_verbose;
+
+        if ( grep { $last eq $_ } @releases ) {
+            $release = shift @releases while @releases && $releases[0] ne $last;
+
+            if ( !$release ) {
+                print STDERR "Nothing new. Waiting...\n" if $opt_verbose;
+                sleep $opt_sleep;
+                next;
+            }
+        }
+        else {
+            $release = shift @releases;
+        }
+    }
+
+    _spew( $opt_last, $release );
+
+    print STDERR "Smoking $release...\n" if $opt_verbose;
+
+    my $meta =
+      HTTP::Tiny->new->get("http://fastapi.metacpan.org/v1/release/$release");
+    die 'meta failed' unless $meta->{success};
+
+    # Poor's man JSON decoder
+    my ($module) = $meta->{content} =~ m/"download_url"\s*:\s*"(.*?)"/;
+
+    print "$module\n";
+    last;
+}
+
+sub _slurp {
+    do { local $/; open my $fh, '<', $_[0] or die $!; <$fh> }
+}
+
+sub _spew {
+    open my $fh, '>', $_[0] or die $!;
+    print $fh $_[1];
+}
